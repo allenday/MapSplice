@@ -21,49 +21,6 @@ import locale
 
 from datetime import datetime, date, time
 
-##########
-# initialize spark
-##########
-# Configure the necessary Spark environment
-import os
-import sys
-
-# Spark home
-spark_home = os.environ.get("SPARK_HOME")
-
-orig_sys_path = []
-for p in sys.path:
-  orig_sys_path.append(p)
-
-# If Spark V1.4.x is detected, then add ' pyspark-shell' to
-# the end of the 'PYSPARK_SUBMIT_ARGS' environment variable
-spark_release_file = spark_home + "/RELEASE"
-if os.path.exists(spark_release_file) and "Spark 1.4" in open(spark_release_file).read():
-    pyspark_submit_args = os.environ.get("PYSPARK_SUBMIT_ARGS", "")
-    if not "pyspark-shell" in pyspark_submit_args: pyspark_submit_args += " pyspark-shell"
-    os.environ["PYSPARK_SUBMIT_ARGS"] = pyspark_submit_args
-
-# Add the spark python sub-directory to the path
-sys.path.insert(0, spark_home + "/python")
-
-# Add the py4j to the path.
-# You may need to change the version number to match your install
-py4j_path = os.path.join(spark_home, "python/lib/py4j-0.8.2.1-src.zip")
-sys.path.insert(0, py4j_path)
-
-# Initialize PySpark to predefine the SparkContext variable 'sc'
-execfile(os.path.join(spark_home, "python/pyspark/shell.py"))
-
-while len(sys.path):
-  sys.path.pop()
-
-for p in orig_sys_path:
-  sys.path.append(p)
-
-##########
-# end initialize spark
-##########
-
 
 use_message = '''
 
@@ -113,6 +70,8 @@ Optional Arguments:
                                                 from ENSEMBL ftp site. (e.g, for human hg19: Homo_sapiens.GRCh37.66.gtf.gz). Required
                                                 for the detection of Circular RNA.
 
+Experimental Arguments:
+    -S/--spark:                                 use Spark to parallelize processing (implies -p 1)
         
 Other Arguments:    
     -h/--help                                   print the usage message                    
@@ -417,17 +376,22 @@ def call_mapsplice_multithreads(segment_mis,
 
     if DEBUG == 1:
         print >> sys.stderr, "[%s] " % splice_cmd
-    mapsplice_log = open(log_file, "w")
-    try:    
-        retcode = subprocess.call(splice_cmd, stdout=mapsplice_log)
-        if retcode != 0:
-            print >> sys.stderr, fail_str, "Error: Running MapSplice multi-thread failed: ", retcode
-            exit(1)    
-    except OSError, o:
-        if o.errno == errno.ENOTDIR or o.errno == errno.ENOENT:
-            print >> sys.stderr, fail_str, "Error: mapsplice_multi_thread not found on this system"
-            print >> sys.stderr, "Please re-build MapSplice by running 'make' in the MapSplice directory"            
+
+    if SPARK == 1:
+        print splice_cmd
         exit(1)
+    else:
+        mapsplice_log = open(log_file, "w")
+        try:    
+            retcode = subprocess.call(splice_cmd, stdout=mapsplice_log)
+            if retcode != 0:
+                print >> sys.stderr, fail_str, "Error: Running MapSplice multi-thread failed: ", retcode
+                exit(1)    
+        except OSError, o:
+            if o.errno == errno.ENOTDIR or o.errno == errno.ENOENT:
+                print >> sys.stderr, fail_str, "Error: mapsplice_multi_thread not found on this system"
+                print >> sys.stderr, "Please re-build MapSplice by running 'make' in the MapSplice directory"            
+            exit(1)
        
     finish_time = datetime.now()
     duration = finish_time - start_time
@@ -495,6 +459,8 @@ def call_mapsplice_multithreads_fusion(segment_mis,
                             "--optimize_repeats",
                             "--fusion", fusion,
                             "--min_fusion_distance", str(minimum_fusion_distance)]
+    print splice_cmd
+    exit(1)
     if read_format == "-q":
         splice_cmd.append("--qual-scale")
         splice_cmd.append(quality_scale)
@@ -531,17 +497,23 @@ def call_mapsplice_multithreads_fusion(segment_mis,
     splice_cmd.append(bowtie_output)
     if DEBUG == 1:
         print >> sys.stderr, "[%s] " % splice_cmd
-    mapsplice_log = open(log_file, "w")
-    try:    
-        retcode = subprocess.call(splice_cmd, stdout=mapsplice_log)#
-        if retcode != 0:
-            print >> sys.stderr, fail_str, "Error: Running MapSplice multi-thread fusion failed: ", retcode
-            exit(1)
-    except OSError, o:
-        if o.errno == errno.ENOTDIR or o.errno == errno.ENOENT:
-            print >> sys.stderr, fail_str, "Error: mapsplice_multi_thread not found on this system"
-            print >> sys.stderr, "Please re-build MapSplice by running 'make' in the MapSplice directory"
-        exit(1) 
+
+    if SPARK == 1:
+        print splice_cmd
+        exit(1)
+    else:
+        mapsplice_log = open(log_file, "w")
+        try:    
+            retcode = subprocess.call(splice_cmd, stdout=mapsplice_log)#
+            if retcode != 0:
+                print >> sys.stderr, fail_str, "Error: Running MapSplice multi-thread fusion failed: ", retcode
+                exit(1)
+        except OSError, o:
+            if o.errno == errno.ENOTDIR or o.errno == errno.ENOENT:
+                print >> sys.stderr, fail_str, "Error: mapsplice_multi_thread not found on this system"
+                print >> sys.stderr, "Please re-build MapSplice by running 'make' in the MapSplice directory"
+            exit(1) 
+
     finish_time = datetime.now()
     duration = finish_time - start_time
     return fusion
@@ -1844,7 +1816,7 @@ def main(argv=None):
         argv = sys.argv
     try:
         try:
-            opts, args = getopt.getopt(argv[1:], "hvo:s:m:x:p:c:i:I:1:2:k:", 
+            opts, args = getopt.getopt(argv[1:], "hvo:s:m:x:p:c:i:I:1:2:k:S", 
                                         ["version",
                                          "help",  
                                          "splice-mis=",
@@ -1945,6 +1917,7 @@ def main(argv=None):
         global build_bowtie_index_dir
         global seg_len_overided
         global min_fusion_distance
+        global SPARK
         
         # option processing
         for option, value in opts:
@@ -2092,6 +2065,53 @@ def main(argv=None):
             exit(1)
         if input_reads_1 != "" and input_reads_2 != "":
             is_paired = 1        
+        if option in ("-S", "--spark"):
+            SPARK = 1
+            ##########
+            # initialize spark
+            ##########
+            # Configure the necessary Spark environment
+            import os
+            import sys
+
+            # Spark home
+            spark_home = os.environ.get("SPARK_HOME")
+            if spark_home == "":
+                print >> sys.stderr, "no SPARK_HOME defined"
+                exit(1)
+
+            orig_sys_path = []
+            for p in sys.path:
+                orig_sys_path.append(p)
+
+            # If Spark V1.4.x is detected, then add ' pyspark-shell' to
+            # the end of the 'PYSPARK_SUBMIT_ARGS' environment variable
+            spark_release_file = spark_home + "/RELEASE"
+            if os.path.exists(spark_release_file) and "Spark 1.4" in open(spark_release_file).read():
+                pyspark_submit_args = os.environ.get("PYSPARK_SUBMIT_ARGS", "")
+                if not "pyspark-shell" in pyspark_submit_args: pyspark_submit_args += " pyspark-shell"
+                os.environ["PYSPARK_SUBMIT_ARGS"] = pyspark_submit_args
+
+            # Add the spark python sub-directory to the path
+            sys.path.insert(0, spark_home + "/python")
+
+            # Add the py4j to the path.
+            # You may need to change the version number to match your install
+            py4j_path = os.path.join(spark_home, "python/lib/py4j-0.8.2.1-src.zip")
+            sys.path.insert(0, py4j_path)
+
+            # Initialize PySpark to predefine the SparkContext variable 'sc'
+            execfile(os.path.join(spark_home, "python/pyspark/shell.py"))
+
+            while len(sys.path):
+                sys.path.pop()
+
+            for p in orig_sys_path:
+                sys.path.append(p)
+            ##########
+            # end initialize spark
+            ##########
+
         print_arguments(logging_dir + "argu_log")   
         
         start_time = datetime.now() 
