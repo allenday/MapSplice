@@ -12,7 +12,7 @@ my ($fusion_fh, $fusion_filename) = File::Temp::tempfile( "MapSplice_fusion_XXXX
 close( $fusion_fh );
 
 #TODO: do we need to handle mapsplice_out here, or is it the same as the call without --fusion?
-open( SUBPROC, "| /mapr/ADPPOC/user/aday/src/MapSplice/bin/mapsplice_multi_thread -q --min_len 25 --seg_len 25 --min_intron 50 --max_intron_single 300000 --max_intron_double 300000 -v 1 --max_double_splice_mis 2 --max_single_splice_mis 1 --max_append_mis 3 --max_ins 6 --max_del 6 -k 40 -m 40 -p 8 --chrom_tab $chrom_tab --ref_seq_path $ref_seq_path --mapsplice_out $sam_filename --check_read $check_read --optimize_repeats --fusion $fusion_filename --min_fusion_distance 10000" );
+open( SUBPROC, "| /mapr/ADPPOC/user/aday/src/MapSplice/bin/mapsplice_multi_thread -q --min_len 25 --seg_len 25 --min_intron 50 --max_intron_single 300000 --max_intron_double 300000 -v 1 --max_double_splice_mis 2 --max_single_splice_mis 1 --max_append_mis 3 --max_ins 6 --max_del 6 -k 40 -m 40 -p 1 --chrom_tab $chrom_tab --ref_seq_path $ref_seq_path --mapsplice_out $sam_filename --check_read $check_read --optimize_repeats --fusion $fusion_filename --min_fusion_distance 10000" );
 
 while ( my $line = <> ) {
   print SUBPROC $line;
