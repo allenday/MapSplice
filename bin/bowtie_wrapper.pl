@@ -43,7 +43,7 @@ while (my $line = <>){
 close( $fh1 );
 close( $fh2 );
 
-open( SAM, "/mapr/ADPPOC/users/aday/src/bowtie-1.1.2/bowtie /Users/aday/src/e_coli/e_coli -1 $fq1 -2 $fq2 |" );
+open( SAM, "/mapr/ADPPOC/user/aday/src/bowtie-1.1.2/bowtie /mapr/ADPPOC/user/aday/data/bms/hg19ERCC/bowtie_index/hg19ERCC -1 $fq1 -2 $fq2 |" );
 while ( my $line = <SAM> ) {
   warn $line;
   print $line;
