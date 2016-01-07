@@ -8,18 +8,23 @@
  #      The US National Science Foundation EF-0850237 to J.L.  and J.F.P. 
  #      The US National Science Foundation Career award IIS-1054631 to J.L.
  #      The US National Institutes of Health R01-HG006272 to J.F.P and J.L.
-import sys
-import getopt
-import subprocess
+from datetime import datetime, date
 import errno
-import os, glob
-import tempfile
-import warnings
-import shutil
-import math  
+import getopt
+import glob
+import json
 import locale
+import math  
+import os
+import random
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from time import sleep
+import warnings
 
-from datetime import datetime, date, time
 
 
 use_message = '''
@@ -71,11 +76,11 @@ Optional Arguments:
                                                 for the detection of Circular RNA.
 
 Experimental Arguments:
-    -S/--spark:                                 use Spark to parallelize processing (implies -p 1)
-        
+    -S/--spark                                  use Spark to parallelize processing (implies -p 1)
 Other Arguments:    
     -h/--help                                   print the usage message                    
     -v/--version                                print the version of MapSplice             
+    --DEBUG                                     enable debug output
 
 For more detailed manual, please visit MapSplice 2.0 website:
 http://www.netlab.uky.edu/p/bioinfo/MapSplice2UserGuide
@@ -156,7 +161,7 @@ min_entropy_repeats = 1
 min_entropy = -0.0001
 low_support_thresh = 1
 min_fusion_distance = 10000;
-
+SPARK = 0
 
 def get_version():
     return ver_message
@@ -286,6 +291,80 @@ def check_file_existence(reads_files_or_dir):
         print >> sys.stderr, "Error: Could not find files or directory " + reads_files_or_dir
         exit(1)
 
+def spark_fixup_cmd(cmd_in):
+    p0 = re.compile(".*?bowtie_index")
+    p1 = re.compile(".*?debug_info")
+
+    cmd = []
+
+    for i in range(0,len(cmd_in)):
+        cmd.append(cmd_in[i])
+
+    for i in range(0,len(cmd)):
+        if cmd[i] == "--chrom_tab":
+            #should be visible everwhere
+            True
+        elif cmd[i] == "--ref_seq_path":
+            #should be visible everwhere
+            True
+        elif p0.match(cmd[i]) != None:
+            #should be visible everwhere
+            #TODO too specific
+            True
+        elif p1.match(cmd[i]) != None:
+            #TODO too specific
+            cmd[i] += '_' + str(random.randint(100000,999999))
+        elif cmd[i] == "--mapsplice_out":
+            cmd[i+1] = tempfile.NamedTemporaryFile(suffix=".sam").name
+        elif cmd[i] == "--check_read":
+            cmd[i+1] += '_' + str(random.randint(100000,999999))
+        elif cmd[i] == "-1":
+            #make it a tempfile
+            cmd[i+1] = tempfile.NamedTemporaryFile(suffix="_1.fastq").name
+        elif cmd[i] == "-2":
+            cmd[i+1] = tempfile.NamedTemporaryFile(suffix="_2.fastq").name
+
+    return cmd
+
+def initialize_spark():
+    # Configure the necessary Spark environment
+    import os
+    import sys
+
+    # Spark home
+    spark_home = os.environ.get("SPARK_HOME")
+    if spark_home == "":
+        print >> sys.stderr, "no SPARK_HOME defined"
+        exit(1)
+
+    orig_sys_path = []
+    for p in sys.path:
+        orig_sys_path.append(p)
+
+    # If Spark V1.4.x is detected, then add ' pyspark-shell' to
+    # the end of the 'PYSPARK_SUBMIT_ARGS' environment variable
+    spark_release_file = spark_home + "/RELEASE"
+    if os.path.exists(spark_release_file) and "Spark 1.4" in open(spark_release_file).read():
+        pyspark_submit_args = os.environ.get("PYSPARK_SUBMIT_ARGS", "")
+        if not "pyspark-shell" in pyspark_submit_args: pyspark_submit_args += " pyspark-shell"
+        os.environ["PYSPARK_SUBMIT_ARGS"] = pyspark_submit_args
+
+    # Add the spark python sub-directory to the path
+    sys.path.insert(0, spark_home + "/python")
+
+    # Add the py4j to the path.
+    # You may need to change the version number to match your install
+    py4j_path = os.path.join(spark_home, "python/lib/py4j-0.8.2.1-src.zip")
+    sys.path.insert(0, py4j_path)
+
+    # Initialize PySpark to predefine the SparkContext variable 'sc'
+    execfile(os.path.join(spark_home, "python/pyspark/shell.py"))
+
+    while len(sys.path):
+        sys.path.pop()
+
+    for p in orig_sys_path:
+        sys.path.append(p)
 
 def call_mapsplice_multithreads(segment_mis,
                                 splice_mis_double,
@@ -378,8 +457,43 @@ def call_mapsplice_multithreads(segment_mis,
         print >> sys.stderr, "[%s] " % splice_cmd
 
     if SPARK == 1:
-        print splice_cmd
-        exit(1)
+        c = spark_fixup_cmd(splice_cmd)
+        reads1 = ""
+        reads2 = ""
+        for i in range(0,len(c)):
+            print "%d\t%s" % (i, c[i])
+            if c[i] == "-1":
+                reads1 = c[i+1]
+            if c[i] == "-2":
+                reads2 = c[i+2]
+        cj = json.dumps(c)
+        rcj = re.sub('"',"'\\''",cj)
+        print c
+        print cj
+        print rcj
+        print "BBBBB"
+        #val absolute_script = "/mapr/ADPPOC/user/aday/src/MapSplice/bin/" + relative_script + " " + """ + '"\\"' + rcj + '\\""' +  """
+        subprocess.call("""echo '
+            import org.apache.spark._;
+            import org.bdgenomics.adam.rdd.ADAMContext;
+            val ac = new org.bdgenomics.adam.rdd.ADAMContext(sc)
+
+            val reads1 = ac.loadAlignments(\"""" + input_reads_file_1 + """\")
+            val reads2 = ac.loadAlignments(\"""" + input_reads_file_2 + """\")
+
+            val paired_reads = reads1.zip(reads2)
+            val relative_script = "bowtie_wrapper.pl"
+            //val relative_script = "buffer.pl"
+            //val relative_script = "multithread_wrapper.pl"
+            val absolute_script = "/mapr/ADPPOC/user/aday/src/MapSplice/bin/" + relative_script
+
+            //sc.addFile(absolute_script)
+            //val piped_reads = paired_reads.pipe(absolute_script)
+            val piped_reads = paired_reads.pipe(absolute_script)
+            val mapped_reads = piped_reads.collect
+
+            ' | /mapr/ADPPOC/user/aday/src/adam/bin/adam-shell""", shell=True)
+        exit(0)
     else:
         mapsplice_log = open(log_file, "w")
         try:    
@@ -459,8 +573,6 @@ def call_mapsplice_multithreads_fusion(segment_mis,
                             "--optimize_repeats",
                             "--fusion", fusion,
                             "--min_fusion_distance", str(minimum_fusion_distance)]
-    print splice_cmd
-    exit(1)
     if read_format == "-q":
         splice_cmd.append("--qual-scale")
         splice_cmd.append(quality_scale)
@@ -499,7 +611,10 @@ def call_mapsplice_multithreads_fusion(segment_mis,
         print >> sys.stderr, "[%s] " % splice_cmd
 
     if SPARK == 1:
-        print splice_cmd
+        j = json.dumps(splice_cmd)
+        print "AAAAA"
+        print j
+        subprocess.call("echo 'import org.apache.spark._;import org.bdgenomics.adam.rdd.ADAMContext'| /mapr/ADPPOC/user/aday/src/adam/adam-shell", shell=True)
         exit(1)
     else:
         mapsplice_log = open(log_file, "w")
@@ -1812,11 +1927,13 @@ def print_arguments(argu_file):
 
 
 def main(argv=None):
+    import sys
+    import os
     if argv is None: #Allow main function to be called from the interactive Python prompt
         argv = sys.argv
     try:
         try:
-            opts, args = getopt.getopt(argv[1:], "hvo:s:m:x:p:c:i:I:1:2:k:S", 
+            opts, args = getopt.getopt(argv[1:], "hvo:s:m:x:p:c:i:I:1:2:k:", 
                                         ["version",
                                          "help",  
                                          "splice-mis=",
@@ -1837,6 +1954,7 @@ def main(argv=None):
                                          "keep-tmp",
                                          "not-rerun-all",
                                          "DEBUG",
+                                         "spark",
                                          "run-MapPER",
                                          "ins=",
                                          "del=",
@@ -1918,10 +2036,15 @@ def main(argv=None):
         global seg_len_overided
         global min_fusion_distance
         global SPARK
-        
+
+        absolute_path_pattern = re.compile("^/")
+
         # option processing
         for option, value in opts:
             if option in ("-o", "--output"):
+                if not absolute_path_pattern.match(value):
+                    print >> sys.stderr, "Error: option '%s' must be absolute (begin with '/')" % option
+                    exit(1)
                 output_dir = value + "/"
                 logging_dir = output_dir + "logs/"
                 temp_dir = output_dir + "tmp/"
@@ -1991,11 +2114,20 @@ def main(argv=None):
                 fusion_flank_case = 0
                 do_fusion = 1
             if option in ("-x", "--bowtie-index"):
+                if not absolute_path_pattern.match(value):
+                    print >> sys.stderr, "Error: option '%s' must be absolute (begin with '/')" % option
+                    exit(1)
                 bwt_idx_prefix = value
             if option in ("-c", "--chromosome-dir"):
+                if not absolute_path_pattern.match(value):
+                    print >> sys.stderr, "Error: option '%s' must be absolute (begin with '/')" % option
+                    exit(1)
                 chromosome_files_dir = value
                 chromosome_files_dir = chromosome_files_dir + "/"
             if option == "--bam":
+                if not absolute_path_pattern.match(value):
+                    print >> sys.stderr, "Error: option '%s' must be absolute (begin with '/')" % option
+                    exit(1)
                 output_bam = 1                                    
             if option in ("-k", "--max-hits"):
                 max_hits = int(value)
@@ -2018,6 +2150,9 @@ def main(argv=None):
                     print >> sys.stderr, "Error: arg to --min-len must > 0"
                     exit(1)
             if option == "--gene-gtf":
+                if not absolute_path_pattern.match(value):
+                    print >> sys.stderr, "Error: option '%s' must be absolute (begin with '/')" % option
+                    exit(1)
                 gene_gtf_file = value                
             if option == "--min-entropy":
                 min_entropy = float(value)
@@ -2041,9 +2176,18 @@ def main(argv=None):
                 run_mapper = 1
             if option == "--DEBUG":
                 DEBUG = 1
+            if option == "--spark":
+                SPARK = 1
+                #initialize_spark()
             if option == "-1":
+                if not absolute_path_pattern.match(value):
+                    print >> sys.stderr, "Error: option '%s' must be absolute (begin with '/')" % option
+                    exit(1)
                 input_reads_1 = value
             if option == "-2":
+                if not absolute_path_pattern.match(value):
+                    print >> sys.stderr, "Error: option '%s' must be absolute (begin with '/')" % option
+                    exit(1)
                 input_reads_2 = value
             if option == "--min-fusion-distance":
                 min_fusion_distance = int(value)
@@ -2065,52 +2209,6 @@ def main(argv=None):
             exit(1)
         if input_reads_1 != "" and input_reads_2 != "":
             is_paired = 1        
-        if option in ("-S", "--spark"):
-            SPARK = 1
-            ##########
-            # initialize spark
-            ##########
-            # Configure the necessary Spark environment
-            import os
-            import sys
-
-            # Spark home
-            spark_home = os.environ.get("SPARK_HOME")
-            if spark_home == "":
-                print >> sys.stderr, "no SPARK_HOME defined"
-                exit(1)
-
-            orig_sys_path = []
-            for p in sys.path:
-                orig_sys_path.append(p)
-
-            # If Spark V1.4.x is detected, then add ' pyspark-shell' to
-            # the end of the 'PYSPARK_SUBMIT_ARGS' environment variable
-            spark_release_file = spark_home + "/RELEASE"
-            if os.path.exists(spark_release_file) and "Spark 1.4" in open(spark_release_file).read():
-                pyspark_submit_args = os.environ.get("PYSPARK_SUBMIT_ARGS", "")
-                if not "pyspark-shell" in pyspark_submit_args: pyspark_submit_args += " pyspark-shell"
-                os.environ["PYSPARK_SUBMIT_ARGS"] = pyspark_submit_args
-
-            # Add the spark python sub-directory to the path
-            sys.path.insert(0, spark_home + "/python")
-
-            # Add the py4j to the path.
-            # You may need to change the version number to match your install
-            py4j_path = os.path.join(spark_home, "python/lib/py4j-0.8.2.1-src.zip")
-            sys.path.insert(0, py4j_path)
-
-            # Initialize PySpark to predefine the SparkContext variable 'sc'
-            execfile(os.path.join(spark_home, "python/pyspark/shell.py"))
-
-            while len(sys.path):
-                sys.path.pop()
-
-            for p in orig_sys_path:
-                sys.path.append(p)
-            ##########
-            # end initialize spark
-            ##########
 
         print_arguments(logging_dir + "argu_log")   
         
