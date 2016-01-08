@@ -5,8 +5,8 @@ use JSON qw(decode_json);
 
 my $template = "@%s/%d\n%s\n+%s/%d\n%s\n";
 
-my ($fh1, $fq1) = tempfile( "fqsplit_XXXXX", SUFFIX => '_1.fq', UNLINK => 1 );
-my ($fh2, $fq2) = tempfile( "fqsplit_XXXXX", SUFFIX => '_2.fq', UNLINK => 1 );
+my ($fh1, $fq1) = tempfile( "fqsplit_XXXXX", SUFFIX => '_1.fq', UNLINK => 1, DIR => "/mapr/ADPPOC/tmp" );
+my ($fh2, $fq2) = tempfile( "fqsplit_XXXXX", SUFFIX => '_2.fq', UNLINK => 1, DIR => "/mapr/ADPPOC/tmp" );
 
 #warn $fq1;
 #warn $fq2;
@@ -43,7 +43,7 @@ while (my $line = <>){
 close( $fh1 );
 close( $fh2 );
 
-open( SAM, "/mapr/ADPPOC/user/aday/src/bowtie-1.1.2/bowtie /mapr/ADPPOC/user/aday/data/bms/hg19ERCC/bowtie_index/hg19ERCC -1 $fq1 -2 $fq2 |" );
+open( SAM, "/mapr/ADPPOC/user/aday/src/bowtie-1.1.2/bowtie -p 16 /mapr/ADPPOC/user/aday/data/bms/hg19ERCC/bowtie_index/hg19ERCC -1 $fq1 -2 $fq2 |" );
 while ( my $line = <SAM> ) {
   warn $line;
   print $line;
